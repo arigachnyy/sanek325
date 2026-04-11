@@ -25,6 +25,24 @@ Scans unread Playtomic and Padel Mate Academy emails, extracts match/class detai
 - Entry point: `playtomic_to_calendar.py`
 - Requires `poppler-utils` (`pdftotext`) on the host.
 
+### [telegram-bot](telegram-bot/)
+Long-running interactive Telegram bot. Runs as a systemd service and dispatches commands to per-project handler modules — each subproject under this repo can contribute its own submenu by exporting `MENU_BUTTON` and `register(app, chat_filter)` from a `bot_handlers.py`.
+
+- Entry point: `bot.py` (systemd unit: `sanek325-telegram-bot.service`)
+- Access-gated to `TELEGRAM_CHAT_ID` from `playtomic-booker/.env`
+- Currently registered modules:
+  - `playtomic-booker` — "🎾 Playtomic" submenu: list / add / remove entries in `bookings.json`
+
+To add a new section, drop a `bot_handlers.py` into the target project and append its directory name to `REGISTERED_MODULES` in `telegram-bot/bot.py`.
+
+Service management:
+
+```bash
+systemctl status sanek325-telegram-bot
+systemctl restart sanek325-telegram-bot
+journalctl -u sanek325-telegram-bot -f
+```
+
 ## Crontab
 
 Jobs run through [`bin/cron_notify.sh`](bin/cron_notify.sh), a wrapper that sends a Telegram alert on non-zero exit (creds are read from `playtomic-booker/.env`):

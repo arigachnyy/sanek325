@@ -1,0 +1,23 @@
+# Virtual environments
+.venv/
+venv/
+
+# Python bytecode
+__pycache__/
+*.pyc
+*.pyo
+
+# Secrets / credentials
+.env
+credentials.json
+token.json
+token_playtomic.json
+
+# Runtime state
+bookings.json
+notified.json
+*.log
+.*.lock
+
+# OS / editor
+.DS_Store

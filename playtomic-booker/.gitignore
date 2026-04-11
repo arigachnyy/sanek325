@@ -1,0 +1,7 @@
+.env
+__pycache__/
+*.pyc
+.venv/
+bookings.json
+notified.json
+.book_court.lock

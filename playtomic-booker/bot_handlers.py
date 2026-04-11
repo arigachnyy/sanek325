@@ -76,22 +76,30 @@ def _pending_bookings() -> list[dict]:
     return pending
 
 
-def _save(bookings: list[dict]) -> None:
-    bookings.sort(key=lambda b: (b["date"], b["time"]))
+def _atomic_write_json(path: Path, data) -> None:
     fd, tmp_path = tempfile.mkstemp(
-        dir=str(BOOKINGS_FILE.parent), prefix=".bookings.", suffix=".tmp"
+        dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
     )
     try:
         with os.fdopen(fd, "w") as f:
-            json.dump(bookings, f, indent=2)
+            json.dump(data, f, indent=2)
             f.write("\n")
-        os.replace(tmp_path, BOOKINGS_FILE)
+        os.replace(tmp_path, path)
     except Exception:
         try:
             os.unlink(tmp_path)
         except FileNotFoundError:
             pass
         raise
+
+
+def _save(bookings: list[dict]) -> None:
+    bookings.sort(key=lambda b: (b["date"], b["time"]))
+    _atomic_write_json(BOOKINGS_FILE, bookings)
+
+
+def _save_notified(notified: dict) -> None:
+    _atomic_write_json(NOTIFIED_FILE, notified)
 
 
 def _fmt(b: dict) -> str:
@@ -167,9 +175,18 @@ async def cb_delete_one(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
     removed = bookings.pop(idx)
     _save(bookings)
-    await q.edit_message_text(
-        f"✅ Removed: {_fmt(removed)}", reply_markup=_submenu()
-    )
+
+    # Also drop the slot from notified.json if it was there, so re-adding the
+    # same slot later won't be auto-skipped by book_court.py.
+    notified = _load_notified()
+    cleared_notified = notified.pop(_slot_key(removed), None) is not None
+    if cleared_notified:
+        _save_notified(notified)
+
+    msg = f"✅ Removed: {_fmt(removed)}"
+    if cleared_notified:
+        msg += "\n🧹 Also cleared from notified.json"
+    await q.edit_message_text(msg, reply_markup=_submenu())
 
 
 async def cb_back(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

@@ -33,6 +33,7 @@ from telegram.ext import (
 MENU_BUTTON = "🎾 Playtomic"
 
 BOOKINGS_FILE = Path(__file__).parent / "bookings.json"
+NOTIFIED_FILE = Path(__file__).parent / "notified.json"
 
 # Conversation states for the "Add" flow
 ADD_DATE, ADD_TIME, ADD_DURATION = range(3)
@@ -53,6 +54,26 @@ def _load() -> list[dict]:
     if not BOOKINGS_FILE.exists():
         return []
     return json.loads(BOOKINGS_FILE.read_text())
+
+
+def _load_notified() -> dict:
+    """Mirror of book_court.py:load_notified — {slot_key: "ok"|"fail"}."""
+    if not NOTIFIED_FILE.exists():
+        return {}
+    return json.loads(NOTIFIED_FILE.read_text())
+
+
+def _slot_key(b: dict) -> str:
+    """Must match book_court.py:slot_key."""
+    return f"{b['date']}_{b['time']}_{b['duration']}"
+
+
+def _pending_bookings() -> list[dict]:
+    """Bookings that haven't been notified yet, sorted chronologically."""
+    notified = _load_notified()
+    pending = [b for b in _load() if _slot_key(b) not in notified]
+    pending.sort(key=lambda b: (b["date"], b["time"]))
+    return pending
 
 
 def _save(bookings: list[dict]) -> None:
@@ -101,12 +122,12 @@ async def show_submenu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 async def cb_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     q = update.callback_query
     await q.answer()
-    bookings = sorted(_load(), key=lambda b: (b["date"], b["time"]))
-    if not bookings:
-        text = "📋 *Scheduled bookings*\n\n_No bookings scheduled._"
+    pending = _pending_bookings()
+    if not pending:
+        text = "📋 *Pending bookings*\n\n_Nothing to book._"
     else:
-        lines = ["📋 *Scheduled bookings*", ""]
-        lines.extend(f"• {_fmt(b)}" for b in bookings)
+        lines = ["📋 *Pending bookings*", ""]
+        lines.extend(f"• {_fmt(b)}" for b in pending)
         text = "\n".join(lines)
     await q.edit_message_text(text, parse_mode="Markdown", reply_markup=_submenu())
 

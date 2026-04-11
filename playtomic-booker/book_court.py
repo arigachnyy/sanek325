@@ -330,6 +330,12 @@ def main():
             print(f"    Not available yet.")
             notified[key] = "fail"
             save_notified(notified)
+            msg = (
+                f"❌ Could not book court\n"
+                f"{date} at {time_short} ({duration}min)\n"
+                f"No double court available."
+            )
+            telegram_sender.send_html(msg)
             continue
         print(f"    Found {court_name}! Creating payment intent...")
         try:

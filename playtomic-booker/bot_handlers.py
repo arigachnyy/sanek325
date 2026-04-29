@@ -29,6 +29,8 @@ from telegram.ext import (
     filters,
 )
 
+from slots import expand_booking, slot_key
+
 # Shown as a top-level reply-keyboard button in the main bot menu.
 MENU_BUTTON = "🎾 Playtomic"
 
@@ -63,15 +65,16 @@ def _load_notified() -> dict:
     return json.loads(NOTIFIED_FILE.read_text())
 
 
-def _slot_key(b: dict) -> str:
-    """Must match book_court.py:slot_key."""
-    return f"{b['date']}_{b['time']}_{b['duration']}"
-
-
 def _pending_bookings() -> list[dict]:
-    """Bookings that haven't been notified yet, sorted chronologically."""
+    """Bookings that still have at least one un-notified candidate, sorted
+    chronologically. A single booking expands into up to three candidates
+    (1h-earlier, 30m-earlier, as-requested), each tracked separately in
+    notified.json."""
     notified = _load_notified()
-    pending = [b for b in _load() if _slot_key(b) not in notified]
+    pending = [
+        b for b in _load()
+        if any(slot_key(c) not in notified for c in expand_booking(b))
+    ]
     pending.sort(key=lambda b: (b["date"], b["time"]))
     return pending
 
@@ -176,10 +179,13 @@ async def cb_delete_one(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     removed = bookings.pop(idx)
     _save(bookings)
 
-    # Also drop the slot from notified.json if it was there, so re-adding the
-    # same slot later won't be auto-skipped by book_court.py.
+    # Also drop every candidate of this slot from notified.json, so re-adding
+    # the same slot later won't be auto-skipped by book_court.py.
     notified = _load_notified()
-    cleared_notified = notified.pop(_slot_key(removed), None) is not None
+    cleared_notified = False
+    for cand in expand_booking(removed):
+        if notified.pop(slot_key(cand), None) is not None:
+            cleared_notified = True
     if cleared_notified:
         _save_notified(notified)
 

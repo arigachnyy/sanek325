@@ -32,6 +32,12 @@ import requests
 from dotenv import load_dotenv
 
 import telegram_sender
+from slots import (
+    DURATION_FALLBACKS,
+    expand_booking,
+    fallback_durations,
+    slot_key,
+)
 
 # ---------------------------------------------------------------------------
 # Config
@@ -116,12 +122,15 @@ def get_availability(date_str: str) -> list:
 def find_matching_court(availability: list, time_str: str, duration: int):
     """Find the best double court with a slot matching requested local time.
 
-    Prefers the court with the smallest number (1 > 2 > ... > 5).
-    Returns (resource_id, court_name, start_utc) or (None, None, None).
+    Prefers the requested duration; falls back to longer durations
+    (60 → 90 → 120 min). Within each duration, prefers the court with
+    the smallest number (1 > 2 > ... > 5).
+    Returns (resource_id, court_name, start_utc, matched_duration)
+    or (None, None, None, None).
     """
     tz = ZoneInfo(TIMEZONE)
     if not availability:
-        return None, None, None
+        return None, None, None, None
     date_str = availability[0]["start_date"]
     local_dt = datetime.strptime(
         f"{date_str}T{time_str}", "%Y-%m-%dT%H:%M:%S"
@@ -131,16 +140,17 @@ def find_matching_court(availability: list, time_str: str, duration: int):
     # Index availability by resource_id for fast lookup
     by_rid = {r["resource_id"]: r for r in availability}
 
-    # Iterate courts in preferred order (lowest number first)
-    for rid, name in DOUBLE_COURTS:
-        resource = by_rid.get(rid)
-        if not resource:
-            continue
-        for slot in resource.get("slots", []):
-            if slot["start_time"] == target_utc and slot["duration"] == duration:
-                start_utc = f"{resource['start_date']}T{slot['start_time']}"
-                return rid, name, start_utc
-    return None, None, None
+    # Try the requested duration first, then longer fallbacks.
+    for try_duration in fallback_durations(duration):
+        for rid, name in DOUBLE_COURTS:
+            resource = by_rid.get(rid)
+            if not resource:
+                continue
+            for slot in resource.get("slots", []):
+                if slot["start_time"] == target_utc and slot["duration"] == try_duration:
+                    start_utc = f"{resource['start_date']}T{slot['start_time']}"
+                    return rid, name, start_utc, try_duration
+    return None, None, None, None
 
 
 # ---------------------------------------------------------------------------
@@ -200,10 +210,6 @@ def save_notified(notified: dict):
     NOTIFIED_FILE.write_text(json.dumps(notified, indent=2))
 
 
-def slot_key(b: dict) -> str:
-    return f"{b['date']}_{b['time']}_{b['duration']}"
-
-
 # ---------------------------------------------------------------------------
 # Polling
 # ---------------------------------------------------------------------------
@@ -220,7 +226,7 @@ def poll_and_book(b: dict, token: str, user_id: str) -> bool:
         attempt += 1
         try:
             availability = get_availability(date)
-            resource_id, court_name, start_utc = find_matching_court(
+            resource_id, court_name, start_utc, matched_duration = find_matching_court(
                 availability, time_str, duration
             )
         except Exception as e:
@@ -233,10 +239,11 @@ def poll_and_book(b: dict, token: str, user_id: str) -> bool:
             time.sleep(POLL_INTERVAL)
             continue
 
-        print(f"    Poll #{attempt}: found {court_name}! Creating payment intent...")
+        print(f"    Poll #{attempt}: found {court_name} ({matched_duration}min)! "
+              f"Creating payment intent...")
         try:
             pi_id = create_payment_intent(
-                token, user_id, resource_id, start_utc, duration
+                token, user_id, resource_id, start_utc, matched_duration
             )
         except Exception as e:
             print(f"    Failed to create payment intent: {e}")
@@ -246,7 +253,7 @@ def poll_and_book(b: dict, token: str, user_id: str) -> bool:
         payment_link = f"{PAYMENT_URL}?payment_intent_id={pi_id}"
         msg = (
             f"🎾 Court available!\n"
-            f"{date} at {time_short} ({duration}min)\n"
+            f"{date} at {time_short} ({matched_duration}min)\n"
             f"Court: {court_name}\n\n"
             f"Pay here: {payment_link}"
         )
@@ -281,13 +288,19 @@ def main():
     tz = ZoneInfo(TIMEZONE)
     now = datetime.now(tz)
 
+    # Each desired slot expands into earlier-start candidates (e.g. 20:00
+    # for 1h → 19:00 for 2h, 19:30 for 1.5h, 20:00 for 1h). Each candidate
+    # is processed independently so the user gets a separate Telegram
+    # message per attempt; they cancel any extras manually.
+    candidates = [c for b in bookings for c in expand_booking(b)]
+
     # Categorise future slots into two buckets:
     # 1. "actionable" — booking window is opening now, poll aggressively.
     # 2. "early_check" — before the booking window, try a single check
     #    in case a court is already available (e.g. cancellation).
     actionable = []
     early_check = []
-    for b in bookings:
+    for b in candidates:
         key = slot_key(b)
         if key in notified:
             continue
@@ -320,7 +333,7 @@ def main():
         print(f"  Early check for {date} {time_short} ({duration}min)...")
         try:
             availability = get_availability(date)
-            resource_id, court_name, start_utc = find_matching_court(
+            resource_id, court_name, start_utc, matched_duration = find_matching_court(
                 availability, time_str, duration
             )
         except Exception as e:
@@ -337,10 +350,11 @@ def main():
             )
             telegram_sender.send_html(msg)
             continue
-        print(f"    Found {court_name}! Creating payment intent...")
+        print(f"    Found {court_name} ({matched_duration}min)! "
+              f"Creating payment intent...")
         try:
             pi_id = create_payment_intent(
-                token, user_id, resource_id, start_utc, duration
+                token, user_id, resource_id, start_utc, matched_duration
             )
         except Exception as e:
             print(f"    Failed to create payment intent: {e}")
@@ -348,7 +362,7 @@ def main():
         payment_link = f"{PAYMENT_URL}?payment_intent_id={pi_id}"
         msg = (
             f"🎾 Court available!\n"
-            f"{date} at {time_short} ({duration}min)\n"
+            f"{date} at {time_short} ({matched_duration}min)\n"
             f"Court: {court_name}\n\n"
             f"Pay here: {payment_link}"
         )
